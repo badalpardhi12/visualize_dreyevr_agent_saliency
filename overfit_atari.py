@@ -9,12 +9,18 @@ import torch.nn.functional as F
 
 import gym, sys
 import numpy as np
-from scipy.misc import imresize # preserves single-pixel info _unlike_ img = img[::2,::2]
+# from scipy.misc import imresize # preserves single-pixel info _unlike_ img = img[::2,::2]
+import cv2 
 
 sys.path.append('..')
-from visualize_atari import *
+from visualize_dreyevr_agent_saliency import *
 
-prepro = lambda img: imresize(img[35:195].mean(2), (80,80)).astype(np.float32).reshape(1,80,80)/255.
+img_h = 160
+img_w = 160
+post_h = 80
+post_w = 80
+
+prepro = lambda img: cv2.resize(img[35:195].mean(2), (80,80)).astype(np.float32).reshape(1,80,80)/255.
 
 class OverfitAtari():
     def __init__(self, env_name, expert_dir, seed=0):

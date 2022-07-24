@@ -9,9 +9,10 @@ from torch.autograd import Variable
 import torch.nn.functional as F
 
 import numpy as np
-from scipy.misc import imresize # preserves single-pixel info _unlike_ img = img[::2,::2]
+# from scipy.misc import imresize # preserves single-pixel info _unlike_ img = img[::2,::2]
+import cv2 
 
-prepro = lambda img: imresize(img[35:195].mean(2), (80,80)).astype(np.float32).reshape(1,80,80)/255.
+prepro = lambda img: cv2.resize(img[35:195].mean(2), (80,80)).astype(np.float32).reshape(1,80,80)/255.
 
 def rollout(model, env, max_ep_len=3e3, render=False):
     history = {'ins': [], 'logits': [], 'values': [], 'outs': [], 'hx': [], 'cx': []}

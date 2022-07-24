@@ -10,7 +10,8 @@ import torch.nn as nn
 
 import glob
 import numpy as np
-from scipy.misc import imresize # preserves single-pixel info _unlike_ img = img[::2,::2]
+# from scipy.misc import imresize # preserves single-pixel info _unlike_ img = img[::2,::2]
+import cv2 
 
 class NNPolicy(torch.nn.Module): # an actor-critic neural network
     def __init__(self, channels, num_actions):
