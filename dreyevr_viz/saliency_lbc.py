@@ -24,14 +24,24 @@ def prepro(img):
 def occlude(I, mask):
     return I*(1-mask) + gaussian_filter(I, sigma=3)*mask
 
+def occlude_white(I, mask):
+    return I*(1-mask) + 1*mask
 
+def occlude_black(I, mask):
+    return I*(1-mask) + 0*mask
 
-def get_mask(center, size, r):
+def get_mask_smooth(center, size, r):
     y,x = np.ogrid[-center[0]:size[0]-center[0], -center[1]:size[1]-center[1]]
     keep = x*x + y*y <= 1
     mask = np.zeros(size) ; mask[keep] = 1 # select a circle of pixels
     mask = gaussian_filter(mask, sigma=r) # blur the circle of pixels. this is a 2D Gaussian for r=r^2=1
     return mask/mask.max()
+
+def get_mask_block(center, size, r):
+    y,x = np.ogrid[-center[0]:size[0]-center[0], -center[1]:size[1]-center[1]]
+    keep = x*x + y*y <= r*r
+    mask = np.zeros(size) ; mask[keep] = 1 # select a circle of pixels    
+    return mask
 
 def apply_mask(input_data, mask, interp_func, channel=0):
     masked_data = deepcopy(input_data)
@@ -58,13 +68,17 @@ def _get_masked_data_parallel(ijk, other_data):
 
 def get_and_apply_mask(center, input_data, r, interp_func, channel):
     H, W = input_data['image'][..., 0].shape[:2]
-    mask = get_mask(center=center, size=[H, W], r=r)
-    masked_data = apply_mask(input_data, mask, interp_func=occlude, channel=channel)
+    if interp_func == "occlude":
+        mask = get_mask_smooth(center=center, size=[H, W], r=r)
+        masked_data = apply_mask(input_data, mask, interp_func=occlude, channel=channel)
+    else:        
+        mask = get_mask_block(center=center, size=[H, W], r=r)
+        masked_data = apply_mask(input_data, mask, interp_func=occlude_black, channel=channel)
     return masked_data
 
 # if computing salience of "target_heatmap" -- incorporates commands
 
-def fwd_img_target_model(dreyevr_img_agent, input_data):
+def fwd_img_target_model(dreyevr_img_agent, input_data, return_control=False):
 #     tick_data = dreyevr_img_agent.offline_tick(input_data)
     tick_data = deepcopy(input_data)
     img = torchvision.transforms.functional.to_tensor(tick_data['image'])
@@ -74,9 +88,12 @@ def fwd_img_target_model(dreyevr_img_agent, input_data):
     out, logits = dreyevr_img_agent.net.net(torch.cat((img, target_heatmap_cam), 1), True)
     # this is (1x4xHW) -- 4 is the num of intermediate pts being pred 
     flat_logits = logits.view(logits.shape[:-2] + (-1,)) #.detach().cpu().numpy()
-    return flat_logits
+    if return_control:
+        return out
+    else:
+        return flat_logits
 
-def fwd_img_target_model_batch(dreyevr_img_agent, batch_data):
+def fwd_img_target_model_batch(dreyevr_img_agent, batch_data, return_control=False):
 #     tick_data = dreyevr_img_agent.offline_tick(input_data)
     # order is 'rgb', 'rgb_left', 'rgb_right'
     result = [torchvision.transforms.functional.to_tensor(input_data_dict['image'])\
@@ -91,12 +108,14 @@ def fwd_img_target_model_batch(dreyevr_img_agent, batch_data):
     target_imgs_tensor = target_imgs_tensor.cuda()
 
     out, logits = dreyevr_img_agent.net.net(torch.cat((imgs_tensor, target_imgs_tensor), 1), True)
-    # this is (1x4xHW) -- 4 is the num of intermediate pts being pred 
+    # this is (Nx4xHW) -- 4 is the num of intermediate pts being pred 
     flat_logits = logits.view(logits.shape[:-2] + (-1,)) #.detach().cpu().numpy()
-    return flat_logits
+    if return_control:
+        return out
+    else:
+        return flat_logits
 
 # if not computing salience of "target_heatmap" -- incorporates commands
-
 def fwd_img_model(dreyevr_img_agent, input_data):
 #     tick_data = dreyevr_img_agent.offline_tick(input_data)
     # tick_data = deepcopy(input_data)
@@ -140,7 +159,7 @@ def score_frame(dreyevr_img_agent, input_data, r, d, interp_func, pt_aggregate="
     for i in range(0,post_h,d):
         for j in range(0,post_w,d):
             for k in range(0,3): # this is for the channel rgb/left/right
-                mask = get_mask(center=[i,j], size=[post_h,post_w], r=r)
+                mask = get_mask_smooth(center=[i,j], size=[post_h,post_w], r=r)
                 masked_data = apply_mask(input_data, mask, occlude, channel=k)
                 # masked image logits
                 l = fwd_img_model(dreyevr_img_agent, masked_data)
@@ -161,7 +180,7 @@ def score_frame(dreyevr_img_agent, input_data, r, d, interp_func, pt_aggregate="
 
 def score_frame_batched(dreyevr_img_agent, input_data, r, d, interp_func,
              pt_aggregate="leading", batch_size=64, include_target=True,
-             return_target_map=False):
+             return_target_map=False, throttle_saliency=False):
     # r: radius of blur
     # d: density of scores (if d==1, then get a score for every pixel...
     #    if d==2 then every other, which is 25% of total pixels for a 2D image)
@@ -177,7 +196,7 @@ def score_frame_batched(dreyevr_img_agent, input_data, r, d, interp_func,
     target_img_OG = target_heatmap_cam.detach().cpu().numpy().squeeze()
     input_data['target_img'] = target_img_OG[None]
     
-    L = fwd_img_target_model(dreyevr_img_agent, input_data)
+    L = fwd_img_target_model(dreyevr_img_agent, input_data, throttle_saliency)
     
     # TODO could do more parallelism here -- batch apply the gaussian blur,
     # generate masks, then Hadamard product to generate the masked imgs
@@ -195,7 +214,7 @@ def score_frame_batched(dreyevr_img_agent, input_data, r, d, interp_func,
     # aggregate batches for forward
     num_batches = int(masked_data_flat.size/batch_size)
     num_batches = (num_batches+1) if masked_data_flat.size%batch_size else num_batches
-    scores = np.zeros(shape=masked_data_flat.shape)
+    scores = np.zeros(shape=masked_data_flat.shape)    
 
     for i in range(num_batches):
         if i < num_batches-1:
@@ -204,14 +223,24 @@ def score_frame_batched(dreyevr_img_agent, input_data, r, d, interp_func,
             batch_data = masked_data_flat[i*batch_size:]    
 
         if include_target:
-            flat_logits = fwd_img_target_model_batch(dreyevr_img_agent, batch_data)
+            flat_logits = fwd_img_target_model_batch(dreyevr_img_agent, batch_data, throttle_saliency)
         else:
             flat_logits = fwd_img_model_batch(dreyevr_img_agent, batch_data)
 
-        if pt_aggregate=="leading":
-            score_temp = (L-flat_logits)[:,:2,:].pow(2).sum(dim=[1,2]).mul_(.5).data.tolist()
+        if throttle_saliency:
+            throttle_og = dreyevr_img_agent.run_step_from_points(L,
+                                input_data).throttle
+            N = flat_logits.shape[0]
+            # print(flat_logits[0])
+            throttles = np.zeros((N,))
+            for i in range(N):
+                throttles[i] = dreyevr_img_agent.run_step_from_points(flat_logits[i], batch_data[i]).throttle
+            score_temp = np.abs(throttles-throttle_og)
         else:
-            score_temp = (L-flat_logits).pow(2).sum(dim=[1,2]).mul_(.5).data.tolist()
+            if pt_aggregate=="leading":
+                score_temp = (L-flat_logits)[:,:2,:].pow(2).sum(dim=[1,2]).mul_(.5).data.tolist()
+            else:
+                score_temp = (L-flat_logits).pow(2).sum(dim=[1,2]).mul_(.5).data.tolist()
 
         if i< num_batches-1:
             scores[i*batch_size:(i+1)*batch_size] = score_temp
