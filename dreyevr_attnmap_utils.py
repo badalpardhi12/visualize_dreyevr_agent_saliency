@@ -1,16 +1,45 @@
 from pathlib import Path
-import cv2
 import pickle as pkl
-import PIL
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
+from PIL import Image, ImageDraw
+
+import sys
+import re 
+
+CARLA_ROOT = Path("/scratch/abhijatb/Bosch22/carla.harp_p13bd/")
+sys.path.insert(0, str(CARLA_ROOT / 'PythonAPI/carla'))
+sys.path.insert(0, str(CARLA_ROOT / 'PythonAPI/carla/dist/carla-0.9.13-py3.6-linux-x86_64.egg'))
+
+import carla
 from scipy.spatial.transform import Rotation as R
+
 
 
 ################
 # Geometric Fns
 ################
+FOV = 90
+w = 256
+F = w / (2 * np.tan(FOV * np.pi / 360))
+
+cam_info ={
+    'F': F,
+    'map_size' : 256,
+    'pixels_per_world' : 5.5,
+    'w' : 256,
+    'h' : 144,
+    'fy' : F,
+    'fx' : 1.0 * F,
+    'hack' : 0.4,
+    'cam_height' : 1.3,
+}
+
+K = np.array([
+[cam_info['fx'], 0, cam_info['w']/2],
+[0, cam_info['fy'], cam_info['h']/2],
+[0, 0, 1]])
 
 def ptsWorld2Cam(focus_hitpt, world2camMatrix, K):
     
@@ -104,12 +133,14 @@ def world2pixels(focus_hitpt, vehicle_transform, K):
     
     return pts_mid, pts_left, pts_right
 
+def dot(img, x, y, color=(255, 255, 255), r=10):
+    draw = ImageDraw.Draw(img)
+    draw.ellipse((x-r, y-r, x+r, y+r), color)
 
 #########################
 # DReyeVR dataloader Fns
 #########################
 
-import sys
 # sys.path.append("/scratch/abhijatb/Bosch22")
 sys.path.append("../Bosch22")
 from dreyevr_parser.parser import parse_file
@@ -193,3 +224,40 @@ def add_gaze_event2df(df_new):
     
     df_new = df_new.join(labels_unique["label"])
     return df_new    
+
+def loadFocusInfoCorrected(aux_hitpt_file, df_size: int):
+    # Read in FocusInfoHitPt
+    data = []
+    with open(aux_hitpt_file,"r") as f:
+        next(f) # skip first line
+        data = f.readlines()
+
+    FocusInfoHitPts = pd.Series(index=np.arange(len(data)), dtype=object)
+    TickCounts = np.zeros(len(data))
+
+    # Parse Data
+    for i, line in enumerate(data):
+        TickCount = re.findall(r"TickCount:\{\d+\}",line)
+        FocusInfoHitPt = re.findall(r"FocusInfoHitPt:\{X\=[-]?\d+[.]?\d*[e]?[-]?\d* Y\=[-]?\d+[.]?\d*[e]?[-]?\d*\ Z\=[-]?\d+[.]?\d*[e]?[-]?\d*\}",line)
+        TickCount_vals = re.findall(r"\d+",TickCount[0])
+        FocusInfoHitPt_vals = re.findall(r"[-]?\d+[.]?\d*[e]?[-]?\d*", FocusInfoHitPt[0])
+        # print(TickCount_vals, FocusInfoHitPt_vals)
+        TickCounts[i] = int(TickCount_vals[0])
+        FocusInfoHitPts[i] = np.array(FocusInfoHitPt_vals).astype('float')
+
+    # Outputting corrected FocusInfo HitPts:
+    # TickCounts are relative -- match up to the recorded frames by doing 
+    # i = (currTickCount-tickCount[0]+2)
+    # Outputs are usually missing the 2 leading ticks
+    num_missing = df_size - len(data)
+    if not num_missing>=0:
+        print(num_missing)
+    first_df_idx = TickCounts[0] + num_missing # first idx in the data frame
+    rpt_idcs = np.ones(len(data))
+    rpt_idcs[0] += num_missing
+    FocusInfoHitPts = FocusInfoHitPts.repeat(list(rpt_idcs))
+    FocusInfoHitPts = FocusInfoHitPts.reset_index(drop=True)
+    # prepend num_missing repeats of FocusInfoHitPts[0]
+    # # repeatedFIHP = np.tile(FocusInfoHitPts[0], num_missing).reshape(-1, 3)
+    # # FocusInfoHitPts = np.vstack([repeatedFIHP, FocusInfoHitPts])
+    return FocusInfoHitPts
